@@ -35,10 +35,45 @@ use WP_Error;
  */
 class Main {
 	/**
-	 * Constructor.
+	 * Live mode.
 	 */
-	public function __construct() {
-		// --- Shortcode ---
+	private const LIVE_MODE = 'live';
+
+	/**
+	 * Test mode.
+	 */
+	private const TEST_MODE = 'test';
+
+	/**
+	 * Current mode.
+	 *
+	 * @var string
+	 */
+	private string $mode = self::LIVE_MODE;
+
+	/**
+	 * Stripe publishable key.
+	 *
+	 * @var string
+	 */
+	private $publishable_key = '';
+
+	/**
+	 * Stripe secret key.
+	 *
+	 * @var string
+	 */
+	private string $secret_key = '';
+
+	/**
+	 * Initialize the plugin.
+	 */
+	public function init(): void {
+		$this->mode            = $this->is_test_env() ? self::TEST_MODE : self::LIVE_MODE;
+		$this->publishable_key = $this->get_publishable_key();
+		$this->secret_key      = $this->get_secret_key();
+
+		// Shortcode.
 		add_shortcode( 'kagg_stripe_button', static function ( $atts ) {
 			$atts = shortcode_atts(
 				[
@@ -52,7 +87,7 @@ class Main {
 				'kagg_stripe_button'
 			);
 
-			$action = esc_url( admin_url( 'admin-post.php' ) );
+			$action = $_SERVER['REQUEST_URI'] ?? '';
 			$nonce  = wp_create_nonce( 'kagg_create_checkout' );
 
 			$amount_cents  = (int) $atts['amount'];
@@ -77,11 +112,10 @@ class Main {
 			return $html;
 		} );
 
-		// --- Handlers (logged-in and guests) ---
-		add_action( 'admin_post_kagg_create_checkout', 'kagg_handle_create_checkout' );
-		add_action( 'admin_post_nopriv_kagg_create_checkout', 'kagg_handle_create_checkout' );
+		// Checkout.
+		add_action( 'template_redirect', [ $this, 'handle_create_checkout' ] );
 
-		// --- Optional: show result notice ---
+		// Show result notice.
 		add_action( 'wp_footer', static function () {
 			if ( isset( $_GET['kagg_stripe_status'] ) ) {
 				$status = sanitize_text_field( $_GET['kagg_stripe_status'] );
@@ -95,16 +129,35 @@ class Main {
 	}
 
 	/**
+	 * Get the Stripe publishable key.
+	 *
+	 * @return string
+	 * @noinspection PhpUndefinedConstantInspection
+	 */
+	private function get_publishable_key(): string {
+		$key_name = $this->mode === self::TEST_MODE ? 'KAGG_STRIPE_TEST_PUBLISHABLE_KEY' : 'KAGG_STRIPE_PUBLISHABLE_KEY';
+		$key      = defined( $key_name ) ? constant( $key_name ) : '';
+
+		/**
+		 * Filter the publishable key.
+		 *
+		 * @param string $key Publishable key.
+		 */
+		return (string) apply_filters( 'kagg_stripe_publishable_key', $key );
+	}
+
+	/**
 	 * Get the Stripe secret key.
 	 *
 	 * @return string
 	 * @noinspection PhpUndefinedConstantInspection
 	 */
-	private function kagg_stripe_get_secret_key(): string {
-		$key = defined( 'KAGG_STRIPE_SECRET_KEY' ) ? KAGG_STRIPE_SECRET_KEY : '';
+	private function get_secret_key(): string {
+		$key_name = $this->mode === self::TEST_MODE ? 'KAGG_STRIPE_TEST_SECRET_KEY' : 'KAGG_STRIPE_SECRET_KEY';
+		$key      = defined( $key_name ) ? constant( $key_name ) : '';
 
 		/**
-		 * Filter the secret key source if you prefer to inject from elsewhere.
+		 * Filter the secret key.
 		 *
 		 * @param string $key Secret key.
 		 */
@@ -120,16 +173,14 @@ class Main {
 	 * @return array|WP_Error
 	 * @noinspection PhpSameParameterValueInspection
 	 */
-	private function kagg_stripe_api_request( string $endpoint, array $body ): WP_Error|array {
-		$key = $this->kagg_stripe_get_secret_key();
-
-		if ( empty( $key ) ) {
+	private function stripe_api_request( string $endpoint, array $body ): WP_Error|array {
+		if ( empty( $this->secret_key ) ) {
 			return new WP_Error( 'no_key', 'Stripe secret key is not defined. Set KAGG_STRIPE_SECRET_KEY in wp-config.php' );
 		}
 
 		$args = [
 			'headers' => [
-				'Authorization' => 'Bearer ' . $key,
+				'Authorization' => 'Bearer ' . $this->secret_key,
 			],
 			'body'    => $body,
 			'timeout' => 30,
@@ -164,7 +215,17 @@ class Main {
 	 * @return void
 	 */
 	#[NoReturn]
-	public function kagg_handle_create_checkout(): void {
+	public function handle_create_checkout(): void {
+		if ( $_SERVER['REQUEST_METHOD'] !== 'POST' ) {
+			return;
+		}
+
+		$action = isset( $_POST['action'] ) ? sanitize_text_field( $_POST['action'] ) : '';
+
+		if ( $action !== 'kagg_create_checkout' ) {
+			return;
+		}
+
 		if ( ! isset( $_POST['_wpnonce'] ) || ! wp_verify_nonce( $_POST['_wpnonce'], 'kagg_create_checkout' ) ) {
 			wp_die( 'Invalid nonce', 403 );
 		}
@@ -191,7 +252,7 @@ class Main {
 			'cancel_url'                                    => $cancel_url,
 		];
 
-		$result = $this->kagg_stripe_api_request( 'checkout/sessions', $body );
+		$result = $this->stripe_api_request( 'checkout/sessions', $body );
 
 		if ( is_wp_error( $result ) ) {
 			$status  = (int) ( $result->get_error_data()['status'] ?? 500 );
@@ -205,5 +266,14 @@ class Main {
 		}
 
 		wp_die( 'Unexpected Stripe response', 502 );
+	}
+
+	/**
+	 * Detect local test environment.
+	 *
+	 * @return bool
+	 */
+	private function is_test_env(): bool {
+		return (bool) preg_match( '/\.test$/', home_url() );
 	}
 }
