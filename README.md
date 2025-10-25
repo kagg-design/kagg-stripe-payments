@@ -1,7 +1,5 @@
 # KAGG Stripe Payments
 
-![Build Status](https://github.com/kagg-design/kagg-stripe-payments/actions/workflows/ci.yml/badge.svg?branch=master)
-
 Contributors: kaggdesign
 
 Maintainers: kaggdesign
