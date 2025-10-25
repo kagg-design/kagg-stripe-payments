@@ -66,55 +66,23 @@ class Main {
 	private string $secret_key = '';
 
 	/**
+	 * Request URI.
+	 *
+	 * @var string
+	 */
+	private string $request_uri = '';
+
+	/**
 	 * Initialize the plugin.
 	 */
 	public function init(): void {
 		$this->mode            = $this->is_test_env() ? self::TEST_MODE : self::LIVE_MODE;
 		$this->publishable_key = $this->get_publishable_key();
 		$this->secret_key      = $this->get_secret_key();
+		$this->request_uri     = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_url( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
 
 		// Shortcode.
-		add_shortcode(
-			'kagg_stripe_button',
-			static function ( $atts ) {
-				$atts = shortcode_atts(
-					[
-						'amount'        => '500', // cents.
-						'currency'      => 'usd',
-						'description'   => 'Custom Payment',
-						'label'         => 'Pay Now',
-						'custom_amount' => 'false',
-					],
-					$atts,
-					'kagg_stripe_button'
-				);
-
-				$action = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_url( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
-				$nonce  = wp_create_nonce( 'kagg_create_checkout' );
-
-				$amount_cents  = (int) $atts['amount'];
-				$currency      = preg_replace( '/[^a-z]/', '', strtolower( $atts['currency'] ) );
-				$description   = sanitize_text_field( $atts['description'] );
-				$label         = esc_html( $atts['label'] );
-				$custom_amount = filter_var( $atts['custom_amount'], FILTER_VALIDATE_BOOLEAN );
-
-				$amount_field = $custom_amount
-					? '<input type="number" min="1" step="1" name="amount" value="' . esc_attr( $amount_cents ) . '" required />'
-					: '<input type="hidden" name="amount" value="' . esc_attr( $amount_cents ) . '" />';
-
-				$html = '<form method="POST" action="' . $action . '" class="cs-stripe-form">';
-
-				$html .= '<input type="hidden" name="action" value="kagg_create_checkout" />';
-				$html .= '<input type="hidden" name="_wpnonce" value="' . $nonce . '" />';
-				$html .= '<input type="hidden" name="currency" value="' . esc_attr( $currency ) . '" />';
-				$html .= '<input type="hidden" name="description" value="' . esc_attr( $description ) . '" />';
-				$html .= $amount_field;
-				$html .= '<button type="submit">' . $label . '</button>';
-				$html .= '</form>';
-
-				return $html;
-			}
-		);
+		add_shortcode( 'kagg_stripe_button', [ $this, 'kagg_stripe_button_shortcode' ] );
 
 		// Checkout.
 		add_action( 'template_redirect', [ $this, 'handle_create_checkout' ] );
@@ -124,23 +92,76 @@ class Main {
 			'wp_footer',
 			static function () {
 				// phpcs:disable WordPress.Security.NonceVerification.Recommended
-				if ( isset( $_GET['kagg_stripe_status'] ) ) {
-					$status = sanitize_text_field( wp_unslash( $_GET['kagg_stripe_status'] ) );
-					$msg    = 'Payment error.';
-					$msg    = 'success' === $status ? 'Payment succeeded.' : $msg;
-					$msg    = 'canceled' === $status ? 'Payment canceled.' : $msg;
-
-					?>
-					<div
-							class="cs-stripe-notice"
-							style="position:fixed; bottom:20px; left:20px; padding:10px 14px; background:#111; color:#fff; border-radius:6px; z-index:9999;">
-						<?php echo esc_html( $msg ); ?>
-					</div>
-					<?php
+				if ( ! isset( $_GET['kagg_stripe_status'] ) ) {
+					return;
 				}
+
+				$status = sanitize_text_field( wp_unslash( $_GET['kagg_stripe_status'] ) );
+				$msg    = isset( $_GET['msg'] ) ? sanitize_text_field( wp_unslash( $_GET['msg'] ) ) : '';
+
+				$msg = match ( $status ) {
+					'success' => 'Payment succeeded.',
+					'canceled' => 'Payment canceled.',
+					'error' => 'Payment error: ' . $msg,
+					default => 'Unknown error.',
+				};
+
+				?>
+				<div
+						class="cs-stripe-notice"
+						style="position:fixed; bottom:20px; left:20px; padding:10px 14px; background:#111; color:#fff; border-radius:6px; z-index:9999;">
+					<?php echo esc_html( $msg ); ?>
+				</div>
+				<?php
 				// phpcs:enable WordPress.Security.NonceVerification.Recommended
 			}
 		);
+	}
+
+	/**
+	 * Render the Stripe Checkout button.
+	 *
+	 * @param array $atts Attributes.
+	 *
+	 * @return string
+	 */
+	public function kagg_stripe_button_shortcode( array $atts ): string {
+		$atts = shortcode_atts(
+			[
+				'amount'        => '500', // cents.
+				'currency'      => 'usd',
+				'description'   => 'Custom Payment',
+				'label'         => 'Pay Now',
+				'custom_amount' => 'false',
+			],
+			$atts,
+			'kagg_stripe_button'
+		);
+
+		$action = $this->request_uri;
+		$nonce  = wp_create_nonce( 'kagg_create_checkout' );
+
+		$amount_cents  = (int) $atts['amount'];
+		$currency      = preg_replace( '/[^a-z]/', '', strtolower( $atts['currency'] ) );
+		$description   = sanitize_text_field( $atts['description'] );
+		$label         = esc_html( $atts['label'] );
+		$custom_amount = filter_var( $atts['custom_amount'], FILTER_VALIDATE_BOOLEAN );
+
+		$amount_field = $custom_amount
+			? '<input type="number" min="1" step="1" name="amount" value="' . esc_attr( $amount_cents ) . '" required />'
+			: '<input type="hidden" name="amount" value="' . esc_attr( $amount_cents ) . '" />';
+
+		$html = '<form method="POST" action="' . $action . '" class="cs-stripe-form">';
+
+		$html .= '<input type="hidden" name="action" value="kagg_create_checkout" />';
+		$html .= '<input type="hidden" name="_wpnonce" value="' . $nonce . '" />';
+		$html .= '<input type="hidden" name="currency" value="' . esc_attr( $currency ) . '" />';
+		$html .= '<input type="hidden" name="description" value="' . esc_attr( $description ) . '" />';
+		$html .= $amount_field;
+		$html .= '<button type="submit">' . $label . '</button>';
+		$html .= '</form>';
+
+		return $html;
 	}
 
 	/**
@@ -258,7 +279,7 @@ class Main {
 		$nonce = isset( $_POST['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ) ) : '';
 
 		if ( ! wp_verify_nonce( $nonce, 'kagg_create_checkout' ) ) {
-			wp_die( 'Invalid nonce', 403 );
+			$this->show_msg( 'Invalid nonce.' );
 		}
 
 		$amount_cents = isset( $_POST['amount'] ) ? (int) $_POST['amount'] : 0;
@@ -271,12 +292,11 @@ class Main {
 			: 'Custom Payment';
 
 		if ( $amount_cents < 1 ) {
-			wp_die( 'Amount must be >= 1 cent', 400 );
+			$this->show_msg( 'Amount must be >= 1 cent.' );
 		}
 
-		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_url( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
-		$success_url = add_query_arg( [ 'kagg_stripe_status' => 'success' ], home_url( add_query_arg( [], $request_uri ) ) );
-		$cancel_url  = add_query_arg( [ 'kagg_stripe_status' => 'canceled' ], home_url( add_query_arg( [], $request_uri ) ) );
+		$success_url = add_query_arg( [ 'kagg_stripe_status' => 'success' ], home_url( $this->request_uri ) );
+		$cancel_url  = add_query_arg( [ 'kagg_stripe_status' => 'canceled' ], home_url( $this->request_uri ) );
 
 		// phpcs:disable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 		$body = [
@@ -297,16 +317,45 @@ class Main {
 			$status  = (int) ( $result->get_error_data()['status'] ?? 500 );
 			$message = esc_html( $result->get_error_message() );
 
-			wp_die( esc_html( 'Stripe error: ' . $message ), $status );
+			$this->show_msg( "Stripe error: ($status) " . $message );
 		}
 
-		if ( ! empty( $result['url'] ) ) {
-			wp_safe_redirect( $result['url'] );
-
-			exit;
+		if ( empty( $result['url'] ) ) {
+			$this->show_msg( 'Unexpected Stripe response' );
 		}
 
-		wp_die( 'Unexpected Stripe response', 502 );
+		add_filter(
+			'allowed_redirect_hosts',
+			static function ( $hosts ) {
+				return array_merge( $hosts, [ 'checkout.stripe.com' ] );
+			}
+		);
+
+		wp_safe_redirect( $result['url'] );
+
+		exit;
+	}
+
+	/**
+	 * Show a message.
+	 *
+	 * @param string $msg Message.
+	 *
+	 * @return void
+	 */
+	#[NoReturn]
+	private function show_msg( string $msg ): void {
+		wp_safe_redirect(
+			add_query_arg(
+				[
+					'kagg_stripe_status' => 'error',
+					'msg'                => $msg,
+				],
+				$this->request_uri
+			)
+		);
+
+		exit;
 	}
 
 	/**
