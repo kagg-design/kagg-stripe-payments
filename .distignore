@@ -1,0 +1,29 @@
+# A set of files and directories you probably don't want in your WordPress.org distribution
+
+# Directories
+/.git
+/.github
+/.idea
+/.wordpress-org
+
+# Files
+/.DS_Store
+/.distignore
+/.editorconfig
+/.eslintrc.json
+/.gitattributes
+/.gitignore
+/.phpcs.cache
+/.yarnrc.yml
+/MAINTAINERS.md
+/README.md
+/SECURITY.md
+/Thumbs.db
+/auth.json
+/babel.config.json
+/composer.lock
+/package.json
+/phpcs.xml
+/webpack.config.js
+/yarn.lock
+/languages/*.pot
