@@ -333,6 +333,12 @@ class Main {
 		];
 		// phpcs:enable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 
+		$user_email = (string) wp_get_current_user()?->user_email;
+
+		if ( $user_email ) {
+			$body['customer_email'] = $user_email;
+		}
+
 		$metadata = [
 			'user_id' => get_current_user_id(),
 		];
@@ -343,7 +349,7 @@ class Main {
 		$metadata = (array) apply_filters( 'kagg_stripe_checkout_metadata', $metadata );
 
 		foreach ( $metadata as $key => $value ) {
-			$body[ "metadata[$key]" ] = $value;
+			$body[ 'metadata[' . $key . ']' ] = $value;
 		}
 
 		/**
@@ -355,34 +361,7 @@ class Main {
 
 		$session = $this->stripe_api_request( 'checkout/sessions', $body );
 
-		if ( is_wp_error( $session ) ) {
-			$status  = (int) ( $session->get_error_data()['status'] ?? 500 );
-			$message = esc_html( $session->get_error_message() );
-
-			$this->show_msg( "Stripe error: ($status) " . $message );
-		}
-
-		if ( empty( $session['url'] ) ) {
-			$this->show_msg( 'Unexpected Stripe response' );
-		}
-
-		$transient = [
-			'body'    => $body,
-			'session' => $session,
-		];
-
-		set_transient( 'kagg_stripe_payment_id_' . $session['id'], $transient, 60 );
-
-		add_filter(
-			'allowed_redirect_hosts',
-			static function ( $hosts ) {
-				return array_merge( $hosts, [ 'checkout.stripe.com' ] );
-			}
-		);
-
-		wp_safe_redirect( $session['url'] );
-
-		exit;
+		$this->process_checkout( $session, $body );
 	}
 
 	/**
@@ -414,5 +393,45 @@ class Main {
 	 */
 	private function is_test_env(): bool {
 		return (bool) preg_match( '/\.test$/', home_url() );
+	}
+
+	/**
+	 * Process the checkout.
+	 *
+	 * @param WP_Error|array $session Session data.
+	 * @param array          $body    Body data.
+	 *
+	 * @return void
+	 */
+	#[NoReturn]
+	private function process_checkout( WP_Error|array $session, array $body ): void {
+		if ( is_wp_error( $session ) ) {
+			$status  = (int) ( $session->get_error_data()['status'] ?? 500 );
+			$message = esc_html( $session->get_error_message() );
+
+			$this->show_msg( "Stripe error: ($status) " . $message );
+		}
+
+		if ( empty( $session['url'] ) ) {
+			$this->show_msg( 'Unexpected Stripe response' );
+		}
+
+		$transient = [
+			'body'    => $body,
+			'session' => $session,
+		];
+
+		set_transient( 'kagg_stripe_payment_id_' . $session['id'], $transient, 60 );
+
+		add_filter(
+			'allowed_redirect_hosts',
+			static function ( $hosts ) {
+				return array_merge( $hosts, [ 'checkout.stripe.com' ] );
+			}
+		);
+
+		wp_safe_redirect( $session['url'] );
+
+		exit;
 	}
 }
