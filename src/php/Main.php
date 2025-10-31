@@ -45,6 +45,11 @@ class Main {
 	private const TEST_MODE = 'test';
 
 	/**
+	 * Transient expiration time in seconds (24 hours).
+	 */
+	private const EXPIRATION = 24 * 60 * 60;
+
+	/**
 	 * Current mode.
 	 *
 	 * @var string
@@ -421,7 +426,7 @@ class Main {
 			'session' => $session,
 		];
 
-		set_transient( 'kagg_stripe_payment_id_' . $session['id'], $transient, 60 );
+		set_transient( 'kagg_stripe_payment_id_' . $session['id'], $transient, self::EXPIRATION );
 
 		add_filter(
 			'allowed_redirect_hosts',
