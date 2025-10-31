@@ -37,12 +37,12 @@ class Main {
 	/**
 	 * Live mode.
 	 */
-	private const string LIVE_MODE = 'live';
+	private const LIVE_MODE = 'live';
 
 	/**
 	 * Test mode.
 	 */
-	private const string TEST_MODE = 'test';
+	private const TEST_MODE = 'test';
 
 	/**
 	 * Current mode.
@@ -79,7 +79,7 @@ class Main {
 		$this->mode            = $this->is_test_env() ? self::TEST_MODE : self::LIVE_MODE;
 		$this->publishable_key = $this->get_publishable_key();
 		$this->secret_key      = $this->get_secret_key();
-		$this->request_uri     = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_url( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+		$this->request_uri     = Request::filter_input( INPUT_SERVER, 'REQUEST_URI' );
 
 		// Shortcode.
 		add_shortcode( 'kagg_stripe_button', [ $this, 'kagg_stripe_button_shortcode' ] );
@@ -88,34 +88,7 @@ class Main {
 		add_action( 'template_redirect', [ $this, 'handle_create_checkout' ] );
 
 		// Show result notice.
-		add_action(
-			'wp_footer',
-			static function () {
-				// phpcs:disable WordPress.Security.NonceVerification.Recommended
-				if ( ! isset( $_GET['kagg_stripe_status'] ) ) {
-					return;
-				}
-
-				$status = sanitize_text_field( wp_unslash( $_GET['kagg_stripe_status'] ) );
-				$msg    = isset( $_GET['msg'] ) ? sanitize_text_field( wp_unslash( $_GET['msg'] ) ) : '';
-
-				$msg = match ( $status ) {
-					'success' => 'Payment succeeded.',
-					'canceled' => 'Payment canceled.',
-					'error' => 'Payment error: ' . $msg,
-					default => 'Unknown error.',
-				};
-
-				?>
-				<div
-						class="cs-stripe-notice"
-						style="position:fixed; bottom:20px; left:20px; padding:10px 14px; background:#111; color:#fff; border-radius:6px; z-index:9999;">
-					<?php echo esc_html( $msg ); ?>
-				</div>
-				<?php
-				// phpcs:enable WordPress.Security.NonceVerification.Recommended
-			}
-		);
+		add_action( 'wp_footer', [ $this, 'show_result' ] );
 	}
 
 	/**
@@ -128,7 +101,7 @@ class Main {
 	public function kagg_stripe_button_shortcode( array $atts ): string {
 		$atts = shortcode_atts(
 			[
-				'amount'        => '500', // cents.
+				'amount'        => '0', // cents.
 				'currency'      => 'usd',
 				'description'   => 'Custom Payment',
 				'label'         => 'Pay Now',
@@ -138,7 +111,7 @@ class Main {
 			'kagg_stripe_button'
 		);
 
-		$action = $this->request_uri;
+		$action = add_query_arg( [], $this->request_uri );
 		$nonce  = wp_create_nonce( 'kagg_create_checkout' );
 
 		$amount_cents  = (int) $atts['amount'];
@@ -162,6 +135,47 @@ class Main {
 		$html .= '</form>';
 
 		return $html;
+	}
+
+	/**
+	 * Show the result notice.
+	 *
+	 * @return void
+	 */
+	public function show_result(): void {
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended
+		if ( ! Request::filter_input( INPUT_GET, 'kagg_stripe_status' ) ) {
+			return;
+		}
+
+		$status     = Request::filter_input( INPUT_GET, 'kagg_stripe_status' );
+		$msg        = Request::filter_input( INPUT_GET, 'msg' );
+		$session_id = Request::filter_input( INPUT_GET, 'session_id' );
+		$transient  = get_transient( 'kagg_stripe_payment_id_' . $session_id );
+		$id         = $transient['session']['id'] ?? '';
+
+		$msg = match ( $status ) {
+			'success' => 'Payment succeeded.',
+			'canceled' => 'Payment canceled.',
+			'error' => $msg,
+			default => 'Unknown error.',
+		};
+
+		if ( 'error' !== $status && ( ! $session_id || $id !== $session_id ) ) {
+			$status = 'error';
+			$msg    = 'Wrong payment id.';
+		}
+
+		do_action( 'kagg_stripe_result', $transient, $status, $msg );
+
+		?>
+		<div
+				class="cs-stripe-notice"
+				style="position:fixed; bottom:20px; left:20px; padding:10px 14px; background:#111; color:#fff; border-radius:6px; z-index:9999;">
+			<?php echo esc_html( $msg ); ?>
+		</div>
+		<?php
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
 	}
 
 	/**
@@ -264,39 +278,47 @@ class Main {
 	 */
 	#[NoReturn]
 	public function handle_create_checkout(): void {
-		$request_method = isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '';
+		$request_method = Request::filter_input( INPUT_SERVER, 'REQUEST_METHOD' );
 
 		if ( 'POST' !== $request_method ) {
 			return;
 		}
 
-		$action = isset( $_POST['action'] ) ? sanitize_text_field( wp_unslash( $_POST['action'] ) ) : '';
+		$action = Request::filter_input( INPUT_POST, 'action' );
 
 		if ( 'kagg_create_checkout' !== $action ) {
 			return;
 		}
 
-		$nonce = isset( $_POST['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ) ) : '';
+		$nonce = Request::filter_input( INPUT_POST, '_wpnonce' );
 
 		if ( ! wp_verify_nonce( $nonce, 'kagg_create_checkout' ) ) {
 			$this->show_msg( 'Invalid nonce.' );
 		}
 
-		$amount_cents = isset( $_POST['amount'] ) ? (int) $_POST['amount'] : 0;
-		$currency     = isset( $_POST['currency'] )
-			? sanitize_text_field( wp_unslash( $_POST['currency'] ) )
-			: 'usd';
+		$amount_cents = (int) Request::filter_input( INPUT_POST, 'amount' );
+		$currency     = (int) Request::filter_input( INPUT_POST, 'currency' ) ?: 'usd';
 		$currency     = preg_replace( '/[^a-z]/', '', strtolower( $currency ) );
-		$description  = isset( $_POST['description'] )
-			? sanitize_text_field( wp_unslash( $_POST['description'] ) )
-			: 'Custom Payment';
+		$description  = (int) Request::filter_input( INPUT_POST, 'description' ) ?: 'Custom Payment';
 
 		if ( $amount_cents < 1 ) {
 			$this->show_msg( 'Amount must be >= 1 cent.' );
 		}
 
-		$success_url = add_query_arg( [ 'kagg_stripe_status' => 'success' ], home_url( $this->request_uri ) );
-		$cancel_url  = add_query_arg( [ 'kagg_stripe_status' => 'canceled' ], home_url( $this->request_uri ) );
+		$success_url = add_query_arg(
+			[
+				'kagg_stripe_status' => 'success',
+				'session_id'         => '{CHECKOUT_SESSION_ID}',
+			],
+			home_url( $this->request_uri )
+		);
+		$cancel_url  = add_query_arg(
+			[
+				'kagg_stripe_status' => 'canceled ',
+				'session_id'         => '{CHECKOUT_SESSION_ID}',
+			],
+			home_url( $this->request_uri )
+		);
 
 		// phpcs:disable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 		$body = [
@@ -311,18 +333,45 @@ class Main {
 		];
 		// phpcs:enable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 
-		$result = $this->stripe_api_request( 'checkout/sessions', $body );
+		$metadata = [
+			'user_id' => get_current_user_id(),
+		];
 
-		if ( is_wp_error( $result ) ) {
-			$status  = (int) ( $result->get_error_data()['status'] ?? 500 );
-			$message = esc_html( $result->get_error_message() );
+		/**
+		 * Filter the checkout metadata.
+		 */
+		$metadata = (array) apply_filters( 'kagg_stripe_checkout_metadata', $metadata );
+
+		foreach ( $metadata as $key => $value ) {
+			$body[ "metadata[$key]" ] = $value;
+		}
+
+		/**
+		 * Filter the checkout body.
+		 *
+		 * @param array $body Checkout body.
+		 */
+		$body = (array) apply_filters( 'kagg_stripe_checkout_body', $body );
+
+		$session = $this->stripe_api_request( 'checkout/sessions', $body );
+
+		if ( is_wp_error( $session ) ) {
+			$status  = (int) ( $session->get_error_data()['status'] ?? 500 );
+			$message = esc_html( $session->get_error_message() );
 
 			$this->show_msg( "Stripe error: ($status) " . $message );
 		}
 
-		if ( empty( $result['url'] ) ) {
+		if ( empty( $session['url'] ) ) {
 			$this->show_msg( 'Unexpected Stripe response' );
 		}
+
+		$transient = [
+			'body'    => $body,
+			'session' => $session,
+		];
+
+		set_transient( 'kagg_stripe_payment_id_' . $session['id'], $transient, 60 );
 
 		add_filter(
 			'allowed_redirect_hosts',
@@ -331,7 +380,7 @@ class Main {
 			}
 		);
 
-		wp_safe_redirect( $result['url'] );
+		wp_safe_redirect( $session['url'] );
 
 		exit;
 	}
