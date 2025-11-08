@@ -302,8 +302,7 @@ class Main {
 			$this->show_msg( 'Invalid nonce.' );
 		}
 
-		[ $mode, $price_id, $amount_cents, $currency, $description ] = $this->get_input_data();
-
+		$data        = $this->get_input_data();
 		$success_url = add_query_arg(
 			[
 				'kagg_stripe_status' => 'success',
@@ -321,25 +320,25 @@ class Main {
 
 		// phpcs:disable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 		$body = [
-			'payment_method_types[]'                        => 'card',
-			'mode'                                          => $mode,
-			'line_items[0][quantity]'                       => 1,
-			'success_url'                                   => $success_url,
-			'cancel_url'                                    => $cancel_url,
+			'payment_method_types[]'  => 'card',
+			'mode'                    => $data['mode'],
+			'line_items[0][quantity]' => 1,
+			'success_url'             => $success_url,
+			'cancel_url'              => $cancel_url,
 			// phpcs:enable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 		];
 
-		if ( self::MODE_PAYMENT === $mode ) {
+		if ( self::MODE_PAYMENT === $data['mode'] ) {
 			// phpcs:disable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 			$body_price = [
-				'line_items[0][price_data][currency]'           => $currency,
-				'line_items[0][price_data][unit_amount]'        => $amount_cents,
-				'line_items[0][price_data][product_data][name]' => $description,
+				'line_items[0][price_data][currency]'           => $data['currency'],
+				'line_items[0][price_data][unit_amount]'        => $data['amount_cents'],
+				'line_items[0][price_data][product_data][name]' => $data['description'],
 			];
 			// phpcs:enable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 		} else {
 			$body_price = [
-				'line_items[0][price]' => $price_id,
+				'line_items[0][price]' => $data['price_id'],
 			];
 		}
 
@@ -466,7 +465,7 @@ class Main {
 	 */
 	private function get_input_data(): array {
 		$mode         = Request::filter_input( INPUT_POST, 'mode' );
-		$price_id     = Request::filter_input( INPUT_POST, 'price' );
+		$price        = Request::filter_input( INPUT_POST, 'price' );
 		$amount_cents = (int) Request::filter_input( INPUT_POST, 'amount' );
 		$currency     = Request::filter_input( INPUT_POST, 'currency' ) ?: 'usd';
 		$currency     = preg_replace( '/[^a-z]/', '', strtolower( $currency ) );
@@ -480,6 +479,6 @@ class Main {
 			$this->show_msg( 'Amount must be >= 1 cent.' );
 		}
 
-		return [ $mode, $price_id, $amount_cents, $currency, $description ];
+		return compact( 'mode', 'price', 'amount_cents', 'currency', 'description' );
 	}
 }
