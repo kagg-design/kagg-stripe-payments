@@ -27,11 +27,13 @@ use WP_Error;
  *
  * 2) Use shortcode anywhere:
  *    [kagg_stripe_button amount="500" currency="usd" description="Consulting" label="Pay $5"]
- *    - amount: integer cents (e.g., 500 = $5.00)
- *    - currency: ISO code (usd, eur, aed, etc.)
- *    - description: product/service name shown in Stripe Checkout
- *    - label: button text
- *    - custom_amount: "true" to render amount input users can edit
+ *    - mode: "payment" or "subscription".
+ *    - price: Stripe price ID (e.g., price_1234567890). Required if mode="subscription".
+ *    - amount: integer cents (e.g., 500 = $5.00).
+ *    - currency: ISO code (usd, eur, aed, etc.).
+ *    - description: product/service name shown in Stripe Checkout.
+ *    - label: button text.
+ *    - custom_amount: "true" to render the amount of input users can edit.
  */
 class Main {
 	/**
@@ -45,16 +47,26 @@ class Main {
 	private const TEST_MODE = 'test';
 
 	/**
+	 * Payment mode 'subscription'.
+	 */
+	private const MODE_SUBSCRIPTION = 'subscription';
+
+	/**
+	 * Payment mode 'payment'.
+	 */
+	private const MODE_PAYMENT = 'payment';
+
+	/**
 	 * Transient expiration time in seconds (24 hours).
 	 */
 	private const EXPIRATION = 24 * 60 * 60;
 
 	/**
-	 * Current mode.
+	 * Current operating mode.
 	 *
 	 * @var string
 	 */
-	private string $mode = self::LIVE_MODE;
+	private string $operating_mode = self::LIVE_MODE;
 
 	/**
 	 * Stripe publishable key.
@@ -81,7 +93,7 @@ class Main {
 	 * Initialize the plugin.
 	 */
 	public function init(): void {
-		$this->mode            = $this->is_test_env() ? self::TEST_MODE : self::LIVE_MODE;
+		$this->operating_mode  = $this->is_test_env() ? self::TEST_MODE : self::LIVE_MODE;
 		$this->publishable_key = $this->get_publishable_key();
 		$this->secret_key      = $this->get_secret_key();
 		$this->request_uri     = Request::filter_input( INPUT_SERVER, 'REQUEST_URI' );
@@ -106,7 +118,9 @@ class Main {
 	public function kagg_stripe_button_shortcode( array $atts ): string {
 		$atts = shortcode_atts(
 			[
-				'amount'        => '0', // cents.
+				'mode'          => self::MODE_PAYMENT,
+				'price'         => '',
+				'amount'        => '0', // In cents.
 				'currency'      => 'usd',
 				'description'   => 'Custom Payment',
 				'label'         => 'Pay Now',
@@ -116,27 +130,22 @@ class Main {
 			'kagg_stripe_button'
 		);
 
-		$action = add_query_arg( [], $this->request_uri );
-		$nonce  = wp_create_nonce( 'kagg_create_checkout' );
+		$amount_cents = (int) $atts['amount'];
+		$currency     = preg_replace( '/[^a-z]/', '', strtolower( $atts['currency'] ) );
+		$nonce        = wp_create_nonce( 'kagg_create_checkout' );
 
-		$amount_cents  = (int) $atts['amount'];
-		$currency      = preg_replace( '/[^a-z]/', '', strtolower( $atts['currency'] ) );
-		$description   = sanitize_text_field( $atts['description'] );
-		$label         = esc_html( $atts['label'] );
-		$custom_amount = filter_var( $atts['custom_amount'], FILTER_VALIDATE_BOOLEAN );
-
-		$amount_field = $custom_amount
-			? '<input type="number" min="1" step="1" name="amount" value="' . esc_attr( $amount_cents ) . '" required />'
-			: '<input type="hidden" name="amount" value="' . esc_attr( $amount_cents ) . '" />';
-
-		$html = '<form method="POST" action="' . $action . '" class="cs-stripe-form">';
+		$html = '<form method="POST" action="' . add_query_arg( [], $this->request_uri ) . '" class="cs-stripe-form">';
 
 		$html .= '<input type="hidden" name="action" value="kagg_create_checkout" />';
-		$html .= '<input type="hidden" name="_wpnonce" value="' . $nonce . '" />';
+		$html .= '<input type="hidden" name="mode" value="' . esc_attr( $atts['mode'] ) . '" />';
+		$html .= '<input type="hidden" name="price" value="' . esc_attr( $atts['price'] ) . '" />';
+		$html .= '<input type="hidden" name="_wpnonce" value="' . esc_attr( $nonce ) . '" />';
 		$html .= '<input type="hidden" name="currency" value="' . esc_attr( $currency ) . '" />';
-		$html .= '<input type="hidden" name="description" value="' . esc_attr( $description ) . '" />';
-		$html .= $amount_field;
-		$html .= '<button type="submit">' . $label . '</button>';
+		$html .= '<input type="hidden" name="description" value="' . esc_attr( $atts['description'] ) . '" />';
+		$html .= filter_var( $atts['custom_amount'], FILTER_VALIDATE_BOOLEAN )
+			? '<input type="number" min="1" step="1" name="amount" value="' . esc_attr( $amount_cents ) . '" required />'
+			: '<input type="hidden" name="amount" value="' . esc_attr( $amount_cents ) . '" />';
+		$html .= '<button type="submit">' . esc_html( $atts['label'] ) . '</button>';
 		$html .= '</form>';
 
 		return $html;
@@ -154,7 +163,7 @@ class Main {
 		}
 
 		$status     = Request::filter_input( INPUT_GET, 'kagg_stripe_status' );
-		$msg        = Request::filter_input( INPUT_GET, 'msg' );
+		$msg        = rawurldecode( Request::filter_input( INPUT_GET, 'msg' ) );
 		$session_id = Request::filter_input( INPUT_GET, 'session_id' );
 		$transient  = get_transient( 'kagg_stripe_payment_id_' . $session_id );
 		$id         = $transient['session']['id'] ?? '';
@@ -190,7 +199,7 @@ class Main {
 	 * @noinspection PhpUndefinedConstantInspection
 	 */
 	private function get_publishable_key(): string {
-		$key_name = self::TEST_MODE === $this->mode ? 'KAGG_STRIPE_TEST_PUBLISHABLE_KEY' : 'KAGG_STRIPE_PUBLISHABLE_KEY';
+		$key_name = self::TEST_MODE === $this->operating_mode ? 'KAGG_STRIPE_TEST_PUBLISHABLE_KEY' : 'KAGG_STRIPE_PUBLISHABLE_KEY';
 		$key      = defined( $key_name ) ? constant( $key_name ) : '';
 
 		/**
@@ -208,7 +217,7 @@ class Main {
 	 * @noinspection PhpUndefinedConstantInspection
 	 */
 	private function get_secret_key(): string {
-		$key_name = self::TEST_MODE === $this->mode ? 'KAGG_STRIPE_TEST_SECRET_KEY' : 'KAGG_STRIPE_SECRET_KEY';
+		$key_name = self::TEST_MODE === $this->operating_mode ? 'KAGG_STRIPE_TEST_SECRET_KEY' : 'KAGG_STRIPE_SECRET_KEY';
 		$key      = defined( $key_name ) ? constant( $key_name ) : '';
 
 		/**
@@ -283,15 +292,7 @@ class Main {
 	 */
 	#[NoReturn]
 	public function handle_create_checkout(): void {
-		$request_method = Request::filter_input( INPUT_SERVER, 'REQUEST_METHOD' );
-
-		if ( 'POST' !== $request_method ) {
-			return;
-		}
-
-		$action = Request::filter_input( INPUT_POST, 'action' );
-
-		if ( 'kagg_create_checkout' !== $action ) {
+		if ( ! $this->check_request() ) {
 			return;
 		}
 
@@ -301,14 +302,7 @@ class Main {
 			$this->show_msg( 'Invalid nonce.' );
 		}
 
-		$amount_cents = (int) Request::filter_input( INPUT_POST, 'amount' );
-		$currency     = (int) Request::filter_input( INPUT_POST, 'currency' ) ?: 'usd';
-		$currency     = preg_replace( '/[^a-z]/', '', strtolower( $currency ) );
-		$description  = (int) Request::filter_input( INPUT_POST, 'description' ) ?: 'Custom Payment';
-
-		if ( $amount_cents < 1 ) {
-			$this->show_msg( 'Amount must be >= 1 cent.' );
-		}
+		[ $mode, $price_id, $amount_cents, $currency, $description ] = $this->get_input_data();
 
 		$success_url = add_query_arg(
 			[
@@ -328,15 +322,28 @@ class Main {
 		// phpcs:disable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 		$body = [
 			'payment_method_types[]'                        => 'card',
-			'mode'                                          => 'payment',
-			'line_items[0][price_data][currency]'           => $currency,
-			'line_items[0][price_data][unit_amount]'        => $amount_cents,
-			'line_items[0][price_data][product_data][name]' => $description,
+			'mode'                                          => $mode,
 			'line_items[0][quantity]'                       => 1,
 			'success_url'                                   => $success_url,
 			'cancel_url'                                    => $cancel_url,
+			// phpcs:enable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
 		];
-		// phpcs:enable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
+
+		if ( self::MODE_PAYMENT === $mode ) {
+			// phpcs:disable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
+			$body_price = [
+				'line_items[0][price_data][currency]'           => $currency,
+				'line_items[0][price_data][unit_amount]'        => $amount_cents,
+				'line_items[0][price_data][product_data][name]' => $description,
+			];
+			// phpcs:enable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
+		} else {
+			$body_price = [
+				'line_items[0][price]' => $price_id,
+			];
+		}
+
+		$body = array_merge( $body, $body_price );
 
 		$user_email = (string) wp_get_current_user()?->user_email;
 
@@ -345,7 +352,7 @@ class Main {
 		}
 
 		$metadata = [
-			'user_id' => get_current_user_id(),
+			'wp_user_id' => get_current_user_id(),
 		];
 
 		/**
@@ -370,6 +377,18 @@ class Main {
 	}
 
 	/**
+	 * Whether the request is a checkout request.
+	 *
+	 * @return bool
+	 */
+	private function check_request(): bool {
+		$request_method = strtolower( Request::filter_input( INPUT_SERVER, 'REQUEST_METHOD' ) );
+		$action         = Request::filter_input( INPUT_POST, 'action' );
+
+		return ( 'post' === $request_method && 'kagg_create_checkout' === $action );
+	}
+
+	/**
 	 * Show a message.
 	 *
 	 * @param string $msg Message.
@@ -382,7 +401,7 @@ class Main {
 			add_query_arg(
 				[
 					'kagg_stripe_status' => 'error',
-					'msg'                => $msg,
+					'msg'                => rawurlencode( $msg ),
 				],
 				$this->request_uri
 			)
@@ -438,5 +457,29 @@ class Main {
 		wp_safe_redirect( $session['url'] );
 
 		exit;
+	}
+
+	/**
+	 * Get input data.
+	 *
+	 * @return array
+	 */
+	private function get_input_data(): array {
+		$mode         = Request::filter_input( INPUT_POST, 'mode' );
+		$price_id     = Request::filter_input( INPUT_POST, 'price' );
+		$amount_cents = (int) Request::filter_input( INPUT_POST, 'amount' );
+		$currency     = Request::filter_input( INPUT_POST, 'currency' ) ?: 'usd';
+		$currency     = preg_replace( '/[^a-z]/', '', strtolower( $currency ) );
+		$description  = Request::filter_input( INPUT_POST, 'description' ) ?: 'Custom Payment';
+
+		if ( ! in_array( $mode, [ self::MODE_PAYMENT, self::MODE_SUBSCRIPTION ], true ) ) {
+			$this->show_msg( 'Payment mode must be "payment" or "subscription".' );
+		}
+
+		if ( self::MODE_PAYMENT === $mode && $amount_cents < 1 ) {
+			$this->show_msg( 'Amount must be >= 1 cent.' );
+		}
+
+		return [ $mode, $price_id, $amount_cents, $currency, $description ];
 	}
 }
